@@ -1146,13 +1146,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
         function initializeApp() {
             initializeTranslations();
+
             const savedLanguage = localStorage.getItem('georoots-mapper-language');
             const browserLanguage = navigator.language.split('-')[0];
             const defaultLanguage = savedLanguage || (translations[browserLanguage] ? browserLanguage : 'en');
+
             document.getElementById('languageSelect').value = defaultLanguage;
             changeLanguage(defaultLanguage);
             showWelcomeOverlay();
             initializeFileUpload();
+
+            // Load GeoJSON from URL if provided
+            const geoJSONUrl = new URLSearchParams(window.location.search).get('geojson');
+
+            if (geoJSONUrl) {
+                // Initialize the map before loading external GeoJSON
+                if (!map) {
+                    initializeMap();
+                }
+
+                loadGeoJSONFromURL(geoJSONUrl);
+            }
         }
 
         function showWelcomeOverlay() {
@@ -1415,6 +1429,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             }
         }
 
+           async function loadGeoJSONFromURL(url) {
+                const loadingOverlay = document.getElementById('loadingOverlay');
+
+                try {
+                    hideWelcomeOverlay();
+                    loadingOverlay.style.display = 'flex';
+
+                    const response = await fetch(url);
+
+                    if (!response.ok) {
+                        throw new Error(`Failed to load GeoJSON: HTTP ${response.status}`);
+                    }
+
+                    const geoJSON = await response.json();
+
+                    processGeoJSON(geoJSON);
+
+                    loadingOverlay.style.display = 'none';
+
+                } catch (error) {
+                    console.error('Error loading GeoJSON from URL:', error);
+
+                    alert('Error loading GeoJSON:\n' + error.message);
+
+                    showWelcomeOverlay();
+                    loadingOverlay.style.display = 'none';
+                }
+            }
+
+
+
         function normalizeGeoJSON(geoJSON) {
             // Normalize any valid GeoJSON format to a FeatureCollection
             if (!geoJSON || typeof geoJSON !== 'object') {
@@ -1598,65 +1643,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             return null;
         }
         
-        function processPointFeature(feature, useClustering = true) {
-            const coords = feature.geometry.coordinates;
-            if (!coords || coords.length < 2) return;
-            const latLng = toLatLngFromXY(coords[0], coords[1]);
-            if (!latLng) return; // skip invalid
-            
-            // Create a marker for zoom levels <= 13
-            const marker = L.marker(latLng);
-            
-            // Add popup with feature properties
-            const popupContent = createPopupContent(feature.properties, 'Point');
-            marker.bindPopup(popupContent);
-            
-            // Add marker to cluster group for better performance with large datasets
-            if (useClustering && pointClusterGroup) {
-                pointClusterGroup.addLayer(marker);
-            } else {
-                // Use regular layer for smaller datasets or when clustering is disabled
-                pointMarkerLayer.addLayer(marker);
-            }
-            
-            // Create circle representation with accurate area for zoom levels > 13
-            let detailedRepresentationAdded = false;
-            if (feature.properties && feature.properties.Area !== undefined) {
-                // Get the area in hectares (robust parsing for commas, spaces, fractions, and unit suffixes)
-                const areaHectares = parseAreaHectares(feature.properties.Area);
-                if (isValidNumber(areaHectares) && areaHectares > 0) {
-                    // Create an accurate area circle that will be resized with zoom level
-                    const areaCircle = L.circle(latLng, {
-                        className: 'area-circle'
-                    });
-                    
-                    // Store the area in hectares as a property of the circle
-                    areaCircle.areaHectares = areaHectares;
-                    
-                    // Add popup with feature properties
-                    areaCircle.bindPopup(popupContent);
-                    
-                    // Add to the point layer (will be shown at zoom levels > 13)
-                    pointLayer.addLayer(areaCircle);
-                    detailedRepresentationAdded = true;
-                }
-            }
+           function processPointFeature(feature, useClustering = true) {
+    const coords = feature.geometry.coordinates;
 
-            // If there is no valid Area, add a default-sized circle marker so it remains visible at high zoom
-            if (!detailedRepresentationAdded) {
-                const circleMarker = L.circleMarker(latLng, {
-                    radius: 6,
-                    color: '#3388ff',
-                    weight: 2,
-                    opacity: 0.9,
-                    fillColor: '#3388ff',
-                    fillOpacity: 0.6
-                });
-                circleMarker.bindPopup(popupContent);
-                pointLayer.addLayer(circleMarker);
-            }
-        }
-        
+    if (!coords || coords.length < 2) return;
+
+    const latLng = toLatLngFromXY(coords[0], coords[1]);
+
+    if (!latLng) return;
+
+    // Create marker
+    const marker = L.marker(latLng);
+
+    // Add popup with feature properties
+    const popupContent = createPopupContent(feature.properties, 'Point');
+    marker.bindPopup(popupContent);
+
+    // Add marker to cluster group for better performance with large datasets
+    if (useClustering && pointClusterGroup) {
+        pointClusterGroup.addLayer(marker);
+    } else {
+        pointMarkerLayer.addLayer(marker);
+    }
+}
         function processMultiPointFeature(feature, useClustering = true) {
             // MultiPoint contains an array of Point coordinates
             const coordinates = feature.geometry.coordinates;
@@ -2025,26 +2034,34 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                 }
             } 
             // For zoom levels > 15, show detailed representations
-            else {
-                // Remove cluster groups
-                if (pointClusterGroup && map.hasLayer(pointClusterGroup)) {
-                    map.removeLayer(pointClusterGroup);
-                }
-                if (polygonClusterGroup && map.hasLayer(polygonClusterGroup)) {
-                    map.removeLayer(polygonClusterGroup);
-                }
-                
-                // Add detailed layers
-                if (!map.hasLayer(polygonLayer)) map.addLayer(polygonLayer);
-                if (!map.hasLayer(pointLayer)) map.addLayer(pointLayer);
+             else {
+                    // Remove cluster groups
+                    if (pointClusterGroup && map.hasLayer(pointClusterGroup)) {
+                        map.removeLayer(pointClusterGroup);
+                    }
 
-                // Ensure feature markers (pointMarkerLayer, polygonMarkerLayer) are hidden at high zoom
-                if (map.hasLayer(pointMarkerLayer)) map.removeLayer(pointMarkerLayer);
-                if (map.hasLayer(polygonMarkerLayer)) map.removeLayer(polygonMarkerLayer);
-                
-                // Update circle radii to represent actual areas in hectares
-                updateCircleRadii();
-            }
+                    if (polygonClusterGroup && map.hasLayer(polygonClusterGroup)) {
+                        map.removeLayer(polygonClusterGroup);
+                    }
+
+                    // Show detailed polygon layer
+                    if (!map.hasLayer(polygonLayer)) {
+                        map.addLayer(polygonLayer);
+                    }
+
+                    // Keep point markers visible at all zoom levels
+                    if (!map.hasLayer(pointMarkerLayer)) {
+                        map.addLayer(pointMarkerLayer);
+                    }
+
+                    // Hide polygon marker representations at high zoom
+                    if (map.hasLayer(polygonMarkerLayer)) {
+                        map.removeLayer(polygonMarkerLayer);
+                    }
+
+                    // Do NOT show pointLayer.
+                    // Point features should remain as normal Leaflet markers.
+                }
             
             // Ensure tree loss layer is on top
             ensureTreeLossLayerOnTop();
